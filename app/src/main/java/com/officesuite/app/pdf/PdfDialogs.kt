@@ -87,6 +87,20 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.Typeface as ComposeTypeface
+import com.officesuite.app.core.FontLibrary
+import com.officesuite.app.ui.ColorPickerDialog
+import com.officesuite.app.ui.hexOf
 import com.officesuite.app.ui.ColorSwatches
 import com.officesuite.app.ui.PALETTE
 import java.io.File
@@ -239,23 +253,39 @@ private fun Modifier.pointerInputDraw(onStart: (Offset) -> Unit, onMove: (Offset
 
 /* ============================ Text dialog ============================ */
 
+private fun fmtPt(v: Float): String =
+    if (kotlin.math.abs(v - v.roundToInt()) < 0.05f) v.roundToInt().toString() else String.format("%.1f", v)
+
 @Composable
 fun PdfTextDialog(st: PdfEditorState, req: TextRequest) {
-    var text by remember(req) { mutableStateOf(req.initial) }
-    var sizePt by remember(req) { mutableStateOf((req.size * 595f).coerceIn(6f, 60f)) }
-    var color by remember(req) { mutableStateOf(req.color) }
     val line = req.line
+    var text by remember(req) { mutableStateOf(req.initial) }
+    var family by remember(req) { mutableStateOf(req.family) }
+    var bold by remember(req) { mutableStateOf(req.bold) }
+    var italic by remember(req) { mutableStateOf(req.italic) }
+    var sizePt by remember(req) { mutableStateOf(req.sizePt) }
+    var color by remember(req) { mutableStateOf(req.color) }
+    var pickColor by remember { mutableStateOf(false) }
+    var fontMenu by remember { mutableStateOf(false) }
+
+    val previewFamily = family ?: line?.family
+    val previewFont = FontFamily(ComposeTypeface(FontLibrary.typeface(previewFamily, bold, italic)))
+
     AlertDialog(
         onDismissRequest = { st.textRequest = null },
         title = { Text(when { line != null -> "Edit text"; req.editId != null -> "Edit text box"; else -> "Add text" }) },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 if (line != null) {
                     Text(
-                        if (line.editable) "Changes the text inside the PDF, keeping its position, size and color."
-                        else "This line can't be rewritten in place; it will be covered and replaced.",
+                        "Original style: ${line.fontName} · ${fmtPt(line.sizePt)} pt" +
+                            (if (line.bold) " · bold" else "") + (if (line.italic) " · italic" else "") + " · ${hexOf(line.color)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (!line.editable) Text(
+                        "This line can't be rewritten inside the PDF; it will be covered and replaced.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error
                     )
                     Spacer(Modifier.height(8.dp))
                 }
@@ -266,24 +296,87 @@ fun PdfTextDialog(st: PdfEditorState, req: TextRequest) {
                     singleLine = line != null,
                     minLines = if (line != null) 1 else 2
                 )
-                if (line == null) {
-                    Spacer(Modifier.height(8.dp))
-                    Text("Size ${sizePt.roundToInt()} pt", style = MaterialTheme.typography.labelMedium)
-                    Slider(value = sizePt, onValueChange = { sizePt = it }, valueRange = 6f..60f)
-                    ColorSwatches(PALETTE, color, onPick = { color = it })
+                // live preview in the real font, weight, size and color
+                Box(
+                    Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFFF4F5F7)).padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text.ifBlank { "Preview" },
+                        fontFamily = previewFont,
+                        fontSize = sizePt.coerceIn(8f, 40f).sp,
+                        color = Color(color),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
+                Spacer(Modifier.height(10.dp))
+                // font family
+                Box {
+                    OutlinedButton(onClick = { fontMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            if (family == null) "Font: original (${line?.fontName ?: ""})" else "Font: ${FontLibrary.label(family)}",
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    DropdownMenu(expanded = fontMenu, onDismissRequest = { fontMenu = false }) {
+                        if (line != null) DropdownMenuItem(
+                            text = { Text("Original font (${line.fontName})") },
+                            onClick = { family = null; bold = line.bold; italic = line.italic; fontMenu = false }
+                        )
+                        FontLibrary.FAMILIES.forEach { f ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(f.label, fontFamily = FontFamily(ComposeTypeface(FontLibrary.typeface(f.id, false, false))))
+                                },
+                                onClick = { family = f.id; fontMenu = false }
+                            )
+                        }
+                    }
+                }
+                // weight, slant, size
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+                    FilterChip(selected = bold, onClick = { bold = !bold }, label = { Text("B", fontWeight = FontWeight.Bold) })
+                    Spacer(Modifier.width(6.dp))
+                    FilterChip(selected = italic, onClick = { italic = !italic }, label = { Text("I", fontStyle = FontStyle.Italic) })
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { sizePt = (sizePt - if (sizePt > 12f) 1f else 0.5f).coerceAtLeast(4f) }) { Text("−", fontSize = 20.sp) }
+                    Text("${fmtPt(sizePt)} pt", style = MaterialTheme.typography.labelLarge)
+                    IconButton(onClick = { sizePt = (sizePt + if (sizePt >= 12f) 1f else 0.5f).coerceAtMost(144f) }) { Text("+", fontSize = 20.sp) }
+                }
+                // color
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { pickColor = true }.padding(vertical = 6.dp)
+                ) {
+                    Box(Modifier.size(28.dp).clip(CircleShape).background(Color(color)).border(1.dp, Color(0x33000000), CircleShape))
+                    Spacer(Modifier.width(10.dp))
+                    Text("Color ${hexOf(color)}", modifier = Modifier.weight(1f))
+                    if (line != null && color != line.color) TextButton(onClick = { color = line.color }) { Text("Original") }
+                }
+                if (line != null) TextButton(onClick = {
+                    family = null; bold = line.bold; italic = line.italic; sizePt = line.sizePt; color = line.color
+                }) { Text("Reset to original style") }
             }
         },
-        confirmButton = { TextButton(onClick = { st.commitText(req, text, sizePt / 595f, color) }) { Text("OK") } },
+        confirmButton = {
+            TextButton(onClick = { st.commitText(req, text, TextStyleChoice(family, bold, italic, sizePt, color)) }) { Text("OK") }
+        },
         dismissButton = {
             Row {
                 if (line != null || req.editId != null) {
-                    TextButton(onClick = { st.commitText(req, "", req.size, color) }) { Text("Delete") }
+                    TextButton(onClick = { st.commitText(req, "", TextStyleChoice(family, bold, italic, sizePt, color)) }) { Text("Delete") }
                 }
                 TextButton(onClick = { st.textRequest = null }) { Text("Cancel") }
             }
         }
     )
+    if (pickColor) {
+        ColorPickerDialog(
+            "Text color", PALETTE, allowNone = false, onDismiss = { pickColor = false },
+            initial = color, original = line?.color
+        ) { c -> if (c != null) color = c; pickColor = false }
+    }
 }
 
 /* ============================ Page organizer ============================ */

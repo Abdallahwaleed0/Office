@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.net.Uri
 import com.officesuite.app.core.FileOps
+import com.officesuite.app.core.FontLibrary
 import com.officesuite.app.core.OoXml
 import com.officesuite.app.core.Templates
 import com.tom_roush.pdfbox.cos.COSDictionary
@@ -14,6 +15,7 @@ import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import com.tom_roush.pdfbox.pdmodel.encryption.AccessPermission
+import com.tom_roush.pdfbox.pdmodel.font.PDType0Font
 import com.tom_roush.pdfbox.pdmodel.encryption.InvalidPasswordException
 import com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDColor
@@ -99,6 +101,7 @@ object PdfEngine {
     fun flatten(src: File, out: File, objs: List<PdfObj>, images: Map<String, Bitmap>) {
         open(src).use { doc ->
             val imageCache = HashMap<String, PDImageXObject>()
+            val fontCache = HashMap<String, PDType0Font?>()
             for ((pageIndex, list) in objs.groupBy { it.page }) {
                 if (pageIndex !in 0 until doc.numberOfPages) continue
                 val page = doc.getPage(pageIndex)
@@ -145,7 +148,15 @@ object PdfEngine {
                                     cs.addRect(c.l * wd, c.t * hd, c.w * wd, c.h * hd)
                                     cs.fill()
                                 }
-                                // Text is rendered by Android (correct shaping for every script) at 4 px per point.
+                                // Real, selectable text in the chosen bundled font when the script needs no shaping.
+                                if (!PdfTextEditor.needsShaping(o.text)) {
+                                    val key = "${o.family}|${o.bold}|${o.italic}"
+                                    val font = fontCache.getOrPut(key) {
+                                        FontLibrary.open(o.family, o.bold, o.italic)?.use { PDType0Font.load(doc, it, true) }
+                                    }
+                                    if (font != null && drawRealText(cs, font, o, wd, hd)) continue
+                                }
+                                // Otherwise Android draws it (correct shaping for every script) at 4 px per point.
                                 val scale = 4f
                                 val pw = wd * scale
                                 val ph = hd * scale
@@ -167,6 +178,30 @@ object PdfEngine {
             }
             doc.save(out)
         }
+    }
+
+    /**
+     * Writes a text box as real PDF text. The page content is in display space (y down), so the text matrix
+     * flips y back. Line positions use the same Android font metrics as the on-screen preview.
+     */
+    private fun drawRealText(cs: PDPageContentStream, font: PDType0Font, o: TextObj, wd: Float, hd: Float): Boolean {
+        val lines = o.text.split('\n')
+        val encoded = try { lines.map { font.encode(it) } } catch (_: Exception) { return false }
+        val tp = ObjPainter.textPaint(o, wd)
+        val fm = tp.fontMetrics
+        cs.saveGraphicsState()
+        cs.setNonStrokingColor(rgb(o.color))
+        cs.beginText()
+        cs.setFont(font, tp.textSize)
+        for ((i, line) in lines.withIndex()) {
+            if (encoded[i].isEmpty()) continue
+            val baseline = o.y * hd - fm.ascent + i * tp.fontSpacing
+            cs.setTextMatrix(Matrix(1f, 0f, 0f, -1f, o.x * wd, baseline))
+            cs.showText(line)
+        }
+        cs.endText()
+        cs.restoreGraphicsState()
+        return true
     }
 
     /* ----------------------------- pages ----------------------------- */

@@ -5,7 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
-import android.graphics.Typeface
+import com.officesuite.app.core.FontLibrary
 import android.text.TextPaint
 import kotlin.math.hypot
 import kotlin.math.max
@@ -44,11 +44,15 @@ data class InkObj(
     override fun hashCode() = id.hashCode()
 }
 
-/** Text box. [size] is the font size relative to page width. [cover] paints a white box first (used to replace text visually). */
+/**
+ * Text box. [size] is the font size relative to page width. [family] is a FontLibrary family id.
+ * [cover] paints a white box first (used to replace existing text visually).
+ */
 data class TextObj(
     override val id: Long, override val page: Int,
     val x: Float, val y: Float, val text: String, val size: Float, val color: Int,
-    val bold: Boolean = false, val cover: NRect? = null
+    val bold: Boolean = false, val cover: NRect? = null,
+    val family: String? = "arial", val italic: Boolean = false
 ) : PdfObj() {
     override fun moved(dx: Float, dy: Float) =
         copy(x = x + dx, y = y + dy, cover = cover?.let { NRect(it.l + dx, it.t + dy, it.r + dx, it.b + dy) })
@@ -70,7 +74,11 @@ data class RectObj(
     override fun moved(dx: Float, dy: Float) = copy(x = x + dx, y = y + dy)
 }
 
-/** A line of existing PDF text found on a page. [ops] are content-stream operator indices that draw it. */
+/**
+ * A line of existing PDF text found on a page. [ops] are content-stream operator indices that draw it.
+ * Style fields describe the original font: [fontName] as written in the PDF, [family] the closest
+ * FontLibrary family, plus weight, slant, size in points and fill color.
+ */
 data class PdfTextLine(
     val page: Int,
     val text: String,
@@ -79,6 +87,20 @@ data class PdfTextLine(
     val sizeNorm: Float,
     val color: Int,
     val editable: Boolean,
+    val fontName: String = "",
+    val family: String = "arial",
+    val bold: Boolean = false,
+    val italic: Boolean = false,
+    val sizePt: Float = 12f,
+)
+
+/** Text style chosen in the editor. [family] null = keep the PDF's own font when possible. */
+data class TextStyleChoice(
+    val family: String?,
+    val bold: Boolean,
+    val italic: Boolean,
+    val sizePt: Float,
+    val color: Int,
 )
 
 /** Draws editor objects on an Android canvas whose size is the page in pixels (pw x ph). */
@@ -93,7 +115,7 @@ object ObjPainter {
     fun textPaint(o: TextObj, pw: Float): TextPaint {
         text.textSize = (o.size * pw).coerceAtLeast(1f)
         text.color = o.color
-        text.typeface = if (o.bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        text.typeface = FontLibrary.typeface(o.family, o.bold, o.italic)
         return text
     }
 
