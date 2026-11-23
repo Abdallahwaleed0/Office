@@ -24,8 +24,12 @@ data class TextRequest(
     val x: Float,
     val y: Float,
     val initial: String,
-    val size: Float,
+    val sizePt: Float,
     val color: Int,
+    /** FontLibrary family id; null = the PDF's original font (existing lines only) */
+    val family: String?,
+    val bold: Boolean,
+    val italic: Boolean,
     val editId: Long? = null,
     val line: PdfTextLine? = null,
 )
@@ -53,7 +57,6 @@ class PdfEditorState(private val ctx: Context, private val scope: CoroutineScope
     var tool by mutableStateOf(Tool.VIEW)
     var color by mutableIntStateOf(0xFF1D3A8A.toInt())
     var strokeWidth by mutableStateOf(0.004f)
-    var textSize by mutableStateOf(0.022f)
     var selectedId by mutableStateOf<Long?>(null)
     var livePreview by mutableStateOf<PdfObj?>(null)
     var night by mutableStateOf(false)
@@ -262,27 +265,65 @@ class PdfEditorState(private val ctx: Context, private val scope: CoroutineScope
         }
     }
 
-    fun commitText(req: TextRequest, text: String, size: Float, color: Int) {
+    /** Style used for the next new text box (remembers the last one chosen). */
+    var lastStyle = TextStyleChoice("arial", false, false, 12f, 0xFF000000.toInt())
+
+    fun pageWidthPt(page: Int): Float = session?.sizes?.getOrNull(page)?.width?.takeIf { it > 0f } ?: 595f
+
+    fun requestNewText(page: Int, x: Float, y: Float) {
+        val s = lastStyle
+        textRequest = TextRequest(page, x, y, "", s.sizePt, s.color, s.family, s.bold, s.italic)
+    }
+
+    fun requestEditObject(o: TextObj) {
+        textRequest = TextRequest(o.page, o.x, o.y, o.text, o.size * pageWidthPt(o.page), o.color, o.family, o.bold, o.italic, editId = o.id)
+    }
+
+    fun requestEditLine(line: PdfTextLine) {
+        textRequest = TextRequest(line.page, line.box.l, line.box.t, line.text, line.sizePt, line.color, null, line.bold, line.italic, line = line)
+    }
+
+    fun commitText(req: TextRequest, text: String, choice: TextStyleChoice) {
         val line = req.line
+        val sizeNorm = choice.sizePt / pageWidthPt(req.page)
         when {
-            line != null -> if (text != line.text) replaceExistingLine(line, text)
+            line != null -> {
+                val styleChanged = choice.family != null || choice.bold != line.bold || choice.italic != line.italic ||
+                    kotlin.math.abs(choice.sizePt - line.sizePt) > 0.05f || choice.color != line.color
+                if (text != line.text || styleChanged) replaceExistingLine(line, text, choice)
+            }
             req.editId != null -> {
                 if (text.isBlank()) removeObject(req.editId)
-                else { pushObjectsUndo(); updateObject(req.editId) { (it as TextObj).copy(text = text, size = size, color = color) } }
+                else {
+                    pushObjectsUndo()
+                    updateObject(req.editId) {
+                        (it as TextObj).copy(
+                            text = text, size = sizeNorm, color = choice.color,
+                            family = choice.family ?: "arial", bold = choice.bold, italic = choice.italic
+                        )
+                    }
+                }
             }
-            text.isNotBlank() -> addObject(TextObj(newId(), req.page, req.x, req.y, text, size, color), select = true)
+            text.isNotBlank() -> addObject(
+                TextObj(
+                    newId(), req.page, req.x, req.y, text, sizeNorm, choice.color,
+                    bold = choice.bold, family = choice.family ?: "arial", italic = choice.italic
+                ),
+                select = true
+            )
         }
+        if (line == null) lastStyle = choice.copy(family = choice.family ?: "arial")
         textRequest = null
     }
 
-    private fun replaceExistingLine(line: PdfTextLine, text: String) {
+    private fun replaceExistingLine(line: PdfTextLine, text: String, choice: TextStyleChoice) {
         val src = working ?: return
         scope.launch {
             busy = "Updating text…"
             try {
                 val out = FileOps.tempFile(ctx, "pdf")
                 val result = withContext(Dispatchers.IO) {
-                    try { PdfTextEditor.replaceLine(src, out, line.page, line, text) } catch (_: Throwable) { PdfTextEditor.Result.FALLBACK }
+                    try { PdfTextEditor.replaceLine(src, out, line.page, line, text, choice) } catch (_: Throwable) { PdfTextEditor.Result.FALLBACK }
                 }
                 if (result == PdfTextEditor.Result.OK) {
                     pushFileUndo(src)
@@ -292,10 +333,12 @@ class PdfEditorState(private val ctx: Context, private val scope: CoroutineScope
                 } else {
                     // Visual replacement: cover the old line and draw the new text in its place.
                     val pad = 0.002f
+                    val scale = if (line.sizePt > 0f) choice.sizePt / line.sizePt else 1f
                     addObject(
                         TextObj(
-                            newId(), line.page, line.box.l, line.box.t, text, line.sizeNorm,
-                            line.color, cover = line.box.inflate(pad, pad)
+                            newId(), line.page, line.box.l, line.box.t, text, line.sizeNorm * scale,
+                            choice.color, bold = choice.bold, cover = line.box.inflate(pad, pad),
+                            family = choice.family ?: line.family, italic = choice.italic
                         )
                     )
                     message = "This line was replaced visually (its font or script can't be rewritten in place)"

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -24,6 +25,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -156,27 +158,103 @@ fun ColorSwatches(colors: List<Int>, selected: Int?, onPick: (Int) -> Unit, modi
     }
 }
 
+/** 8 grays + 14 hues x 5 tones. */
+val FULL_PALETTE: List<Int> by lazy {
+    val out = ArrayList<Int>()
+    listOf(0xFF000000, 0xFF333333, 0xFF555555, 0xFF777777, 0xFF999999, 0xFFBBBBBB, 0xFFDDDDDD, 0xFFFFFFFF)
+        .forEach { out.add(it.toInt()) }
+    val hues = listOf(0f, 15f, 30f, 45f, 60f, 90f, 120f, 160f, 190f, 210f, 230f, 260f, 290f, 320f)
+    val tones = listOf(0.25f to 1f, 0.55f to 1f, 1f to 0.95f, 1f to 0.7f, 1f to 0.45f)
+    for ((sat, v) in tones) for (h in hues) out.add(android.graphics.Color.HSVToColor(floatArrayOf(h, sat, v)))
+    out
+}
+
+fun hexOf(color: Int): String = String.format("#%06X", color and 0xFFFFFF)
+
+private fun parseHex(s: String): Int? {
+    val h = s.trim().removePrefix("#")
+    if (h.length != 6) return null
+    return h.toLongOrNull(16)?.let { (it or 0xFF000000).toInt() }
+}
+
 @Composable
-fun ColorPickerDialog(title: String, colors: List<Int>, allowNone: Boolean, onDismiss: () -> Unit, onPick: (Int?) -> Unit) {
+private fun Swatch(c: Int, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.padding(3.dp).size(32.dp).clip(CircleShape).background(Color(c))
+            .border(if (selected) 3.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else Color(0x33000000), CircleShape)
+            .clickable(onClick = onClick)
+    )
+}
+
+/**
+ * Color picker with presets, a full palette and a custom HSV / hex color.
+ * [original] adds a "Use original color" button (e.g. the color of the PDF text being edited).
+ */
+@Composable
+fun ColorPickerDialog(
+    title: String,
+    colors: List<Int>,
+    allowNone: Boolean,
+    onDismiss: () -> Unit,
+    initial: Int? = null,
+    original: Int? = null,
+    onPick: (Int?) -> Unit
+) {
+    val start = initial ?: original ?: colors.firstOrNull() ?: 0xFF000000.toInt()
+    val hsv = remember { FloatArray(3).also { android.graphics.Color.colorToHSV(start, it) } }
+    var hue by remember { mutableStateOf(hsv[0]) }
+    var sat by remember { mutableStateOf(hsv[1]) }
+    var value by remember { mutableStateOf(hsv[2]) }
+    var hex by remember { mutableStateOf(hexOf(start)) }
+    val custom = android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, value))
+    fun setFrom(c: Int) {
+        val t = FloatArray(3)
+        android.graphics.Color.colorToHSV(c, t)
+        hue = t[0]; sat = t[1]; value = t[2]; hex = hexOf(c)
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            Column {
-                val rows = colors.chunked(6)
-                rows.forEach { row ->
-                    Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        row.forEach { c ->
-                            Box(
-                                Modifier.size(34.dp).clip(CircleShape).background(Color(c))
-                                    .border(1.dp, Color(0x33000000), CircleShape).clickable { onPick(c) }
-                            )
-                        }
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (original != null) {
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { onPick(original) }.padding(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Swatch(original, false) { onPick(original) }
+                        Spacer(Modifier.width(8.dp))
+                        Text("Use original color  ${hexOf(original)}")
                     }
                 }
-                if (allowNone) {
-                    Spacer(Modifier.height(8.dp))
-                    TextButton(onClick = { onPick(null) }) { Text("None") }
+                (colors + FULL_PALETTE).distinct().chunked(7).forEach { row ->
+                    Row { row.forEach { c -> Swatch(c, c == initial) { onPick(c) } } }
+                }
+                Spacer(Modifier.height(12.dp))
+                Text("Custom color", style = MaterialTheme.typography.titleSmall)
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 6.dp)) {
+                    Box(
+                        Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).background(Color(custom))
+                            .border(1.dp, Color(0x33000000), RoundedCornerShape(10.dp))
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    OutlinedTextField(
+                        value = hex,
+                        onValueChange = { v -> hex = v; parseHex(v)?.let { setFrom(it); hex = v } },
+                        singleLine = true,
+                        label = { Text("Hex") },
+                        modifier = Modifier.width(150.dp)
+                    )
+                }
+                Text("Hue", style = MaterialTheme.typography.labelSmall)
+                Slider(value = hue, onValueChange = { hue = it; hex = hexOf(android.graphics.Color.HSVToColor(floatArrayOf(it, sat, value))) }, valueRange = 0f..360f)
+                Text("Saturation", style = MaterialTheme.typography.labelSmall)
+                Slider(value = sat, onValueChange = { sat = it; hex = hexOf(android.graphics.Color.HSVToColor(floatArrayOf(hue, it, value))) }, valueRange = 0f..1f)
+                Text("Brightness", style = MaterialTheme.typography.labelSmall)
+                Slider(value = value, onValueChange = { value = it; hex = hexOf(android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, it))) }, valueRange = 0f..1f)
+                Row {
+                    TextButton(onClick = { onPick(custom) }) { Text("Use custom color") }
+                    if (allowNone) TextButton(onClick = { onPick(null) }) { Text("None") }
                 }
             }
         },

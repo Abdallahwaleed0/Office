@@ -127,16 +127,15 @@ private fun handleTap(st: PdfEditorState, page: Int, pos: Offset, pw: Float, ph:
             val hit = st.objects.lastOrNull { it.page == page && ObjPainter.hit(it, pos.x, pos.y, pw, ph, 8 * density) }
             when {
                 hit == null -> st.selectedId = null
-                hit.id == st.selectedId && hit is TextObj ->
-                    st.textRequest = TextRequest(page, hit.x, hit.y, hit.text, hit.size, hit.color, editId = hit.id)
+                hit.id == st.selectedId && hit is TextObj -> st.requestEditObject(hit)
                 else -> st.selectedId = hit.id
             }
         }
-        Tool.ADD_TEXT -> st.textRequest = TextRequest(page, nx, ny, "", st.textSize, st.color)
+        Tool.ADD_TEXT -> st.requestNewText(page, nx, ny)
         Tool.EDIT_TEXT -> {
             val obj = st.objects.lastOrNull { it is TextObj && it.page == page && ObjPainter.hit(it, pos.x, pos.y, pw, ph, 6 * density) } as TextObj?
             if (obj != null) {
-                st.textRequest = TextRequest(page, obj.x, obj.y, obj.text, obj.size, obj.color, editId = obj.id)
+                st.requestEditObject(obj)
                 return
             }
             val lines = st.textLines[page]
@@ -148,7 +147,7 @@ private fun handleTap(st: PdfEditorState, page: Int, pos: Offset, pw: Float, ph:
             val tolX = 6 * density / pw
             val tolY = 4 * density / ph
             val line = lines.firstOrNull { it.box.inflate(tolX, tolY).contains(nx, ny) }
-            if (line != null) st.textRequest = TextRequest(page, line.box.l, line.box.t, line.text, line.sizeNorm, line.color, line = line)
+            if (line != null) st.requestEditLine(line)
             else st.message = if (lines.isEmpty()) "No editable text on this page (it may be a scanned image)" else "Tap inside a highlighted line"
         }
         else -> {}

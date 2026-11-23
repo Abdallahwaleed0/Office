@@ -1,6 +1,19 @@
 package com.officesuite.app.pdf
 
+import com.officesuite.app.core.FontLibrary
 import com.tom_roush.pdfbox.contentstream.operator.Operator
+import com.tom_roush.pdfbox.contentstream.operator.color.SetNonStrokingColor
+import com.tom_roush.pdfbox.contentstream.operator.color.SetNonStrokingColorN
+import com.tom_roush.pdfbox.contentstream.operator.color.SetNonStrokingColorSpace
+import com.tom_roush.pdfbox.contentstream.operator.color.SetNonStrokingDeviceCMYKColor
+import com.tom_roush.pdfbox.contentstream.operator.color.SetNonStrokingDeviceGrayColor
+import com.tom_roush.pdfbox.contentstream.operator.color.SetNonStrokingDeviceRGBColor
+import com.tom_roush.pdfbox.contentstream.operator.color.SetStrokingColor
+import com.tom_roush.pdfbox.contentstream.operator.color.SetStrokingColorN
+import com.tom_roush.pdfbox.contentstream.operator.color.SetStrokingColorSpace
+import com.tom_roush.pdfbox.contentstream.operator.color.SetStrokingDeviceCMYKColor
+import com.tom_roush.pdfbox.contentstream.operator.color.SetStrokingDeviceGrayColor
+import com.tom_roush.pdfbox.contentstream.operator.color.SetStrokingDeviceRGBColor
 import com.tom_roush.pdfbox.cos.COSArray
 import com.tom_roush.pdfbox.cos.COSBase
 import com.tom_roush.pdfbox.cos.COSFloat
@@ -15,7 +28,6 @@ import com.tom_roush.pdfbox.pdmodel.common.PDStream
 import com.tom_roush.pdfbox.pdmodel.font.PDFont
 import com.tom_roush.pdfbox.pdmodel.font.PDSimpleFont
 import com.tom_roush.pdfbox.pdmodel.font.PDType0Font
-import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import com.tom_roush.pdfbox.pdmodel.graphics.form.PDFormXObject
 import com.tom_roush.pdfbox.pdmodel.graphics.form.PDTransparencyGroup
 import com.tom_roush.pdfbox.text.PDFTextStripper
@@ -48,9 +60,42 @@ object PdfTextEditor {
         val uni: String get() = tp.unicode ?: ""
     }
 
-    private class Line(val glyphs: List<Glyph>, val text: String, val box: NRect, val ops: Set<Int>, val fs: Float, val color: Int, val editable: Boolean)
+    private class Line(
+        val glyphs: List<Glyph>, val text: String, val box: NRect, val ops: Set<Int>, val fs: Float, val color: Int,
+        val editable: Boolean, val font: PDFont?, val style: FontLibrary.Match
+    )
+
+    /** Closest bundled family + weight/slant for a PDF font. */
+    private fun styleOf(font: PDFont?): FontLibrary.Match {
+        val d = try { font?.fontDescriptor } catch (_: Exception) { null }
+        return FontLibrary.match(
+            font?.name,
+            weight = d?.fontWeight ?: 0f,
+            italicAngle = d?.italicAngle ?: 0f,
+            serif = d?.isSerif ?: false,
+            fixedPitch = d?.isFixedPitch ?: false,
+            forceBold = d?.isForceBold ?: false,
+        )
+    }
 
     private class GlyphCollector : PDFTextStripper() {
+        init {
+            // PDFTextStripper ignores color by default; register the color operators so that
+            // graphicsState.nonStrokingColor holds the real text color.
+            addOperator(SetStrokingColorSpace())
+            addOperator(SetNonStrokingColorSpace())
+            addOperator(SetStrokingColor())
+            addOperator(SetStrokingColorN())
+            addOperator(SetNonStrokingColor())
+            addOperator(SetNonStrokingColorN())
+            addOperator(SetStrokingDeviceGrayColor())
+            addOperator(SetNonStrokingDeviceGrayColor())
+            addOperator(SetStrokingDeviceRGBColor())
+            addOperator(SetNonStrokingDeviceRGBColor())
+            addOperator(SetStrokingDeviceCMYKColor())
+            addOperator(SetNonStrokingDeviceCMYKColor())
+        }
+
         val glyphs = ArrayList<Glyph>()
         val opTotal: Int get() = opIndex + 1
         private var opIndex = -1
@@ -166,7 +211,10 @@ object PdfTextEditor {
             val b = gl.maxOf { it.y + it.fs * 0.25f }
             val ops = gl.map { it.op }.toSet()
             val editable = ops.none { it < 0 } && gl.none { it.uni.isEmpty() }
-            lines.add(Line(gl, text, NRect(l / dw, t / dh, r / dw, b / dh), ops, fs, gl.first().color, editable))
+            // dominant font and color of the line (by number of glyphs)
+            val font = gl.groupingBy { it.tp.font }.eachCount().maxByOrNull { it.value }?.key
+            val color = gl.filter { it.uni.isNotBlank() }.groupingBy { it.color }.eachCount().maxByOrNull { it.value }?.key ?: gl.first().color
+            lines.add(Line(gl, text, NRect(l / dw, t / dh, r / dw, b / dh), ops, fs, color, editable, font, styleOf(font)))
         }
         return lines.sortedWith(compareBy({ it.box.t }, { it.box.l }))
     }
@@ -177,11 +225,15 @@ object PdfTextEditor {
         val (dw, _) = displaySize(doc, pageIndex)
         val col = collect(doc, pageIndex)
         buildLines(doc, pageIndex, col.glyphs).map {
-            PdfTextLine(pageIndex, it.text, it.box, it.ops.sorted(), it.fs / dw, it.color, it.editable && col.consistent)
+            PdfTextLine(
+                pageIndex, it.text, it.box, it.ops.sorted(), it.fs / dw, it.color, it.editable && col.consistent,
+                fontName = it.style.displayName, family = it.style.familyId, bold = it.style.bold,
+                italic = it.style.italic, sizePt = it.fs
+            )
         }
     }
 
-    private fun needsShaping(text: String): Boolean = text.any { ch ->
+    fun needsShaping(text: String): Boolean = text.any { ch ->
         when (Character.getDirectionality(ch)) {
             Character.DIRECTIONALITY_RIGHT_TO_LEFT, Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC -> true
             else -> {
@@ -232,17 +284,19 @@ object PdfTextEditor {
         return arr
     }
 
-    private val SYSTEM_FONTS = listOf(
-        "/system/fonts/NotoSans-Regular.ttf",
-        "/system/fonts/Roboto-Regular.ttf",
-        "/system/fonts/DroidSans.ttf"
-    )
-
-    private fun systemFont(doc: PDDocument): PDType0Font? {
-        for (path in SYSTEM_FONTS) {
-            val f = File(path)
-            if (!f.exists()) continue
-            try { return PDType0Font.load(doc, f) } catch (_: Throwable) {}
+    /** Loads a bundled font into [doc] (subset-embedded) and encodes [text] with it, or returns null. */
+    private fun libraryFont(doc: PDDocument, family: String?, bold: Boolean, italic: Boolean, text: String): Pair<PDFont, COSString>? {
+        for (fam in listOf(family, FontLibrary.WIDE_COVERAGE).distinct()) {
+            val stream = FontLibrary.open(fam, bold, italic) ?: continue
+            try {
+                val font = stream.use { PDType0Font.load(doc, it, true) }
+                val bytes = font.encode(text)
+                // written straight into the content stream, so tell the subsetter which characters are used
+                text.codePoints().forEach { font.addToSubset(it) }
+                return font to COSString(bytes)
+            } catch (_: Exception) {
+                // a character is missing in this family: try the next one
+            }
         }
         return null
     }
@@ -251,7 +305,7 @@ object PdfTextEditor {
      * Replaces [target] on page [pageIndex] of [src] with [newText] (empty = delete) and writes [out].
      * Returns FALLBACK when the text cannot be rewritten in place (caller then replaces it visually).
      */
-    fun replaceLine(src: File, out: File, pageIndex: Int, target: PdfTextLine, newText: String): Result {
+    fun replaceLine(src: File, out: File, pageIndex: Int, target: PdfTextLine, newText: String, choice: TextStyleChoice): Result {
         if (newText.isNotEmpty() && needsShaping(newText)) return Result.FALLBACK
         PdfEngine.open(src).use { doc ->
             if (pageIndex !in 0 until doc.numberOfPages) return Result.NOT_FOUND
@@ -266,26 +320,21 @@ object PdfTextEditor {
                 ?: return Result.NOT_FOUND
             if (!line.editable) return Result.FALLBACK
 
-            // choose font and encode the replacement
+            // choose the font:
+            //  1. the PDF's own font, when the style is unchanged and it already contains every character;
+            //  2. otherwise the closest bundled family (same metrics) with the original/selected weight and slant.
             val first = line.glyphs.minByOrNull { it.x } ?: return Result.NOT_FOUND
             var showOperand: COSBase? = null
             var font: PDFont? = null
             if (newText.isNotEmpty()) {
-                val orig = first.tp.font
-                if (orig != null) {
+                val keepOriginal = choice.family == null && choice.bold == line.style.bold && choice.italic == line.style.italic
+                val orig = line.font ?: first.tp.font
+                if (keepOriginal && orig != null) {
                     encodeWithOriginal(newText, orig, glyphs)?.let { showOperand = it; font = orig }
                 }
                 if (showOperand == null) {
-                    try {
-                        val std = PDType1Font.HELVETICA
-                        showOperand = COSString(std.encode(newText))
-                        font = std
-                    } catch (_: Exception) {
-                        val sys = systemFont(doc)
-                        if (sys != null) try {
-                            showOperand = COSString(sys.encode(newText)); font = sys
-                        } catch (_: Exception) {
-                        }
+                    libraryFont(doc, choice.family ?: line.style.familyId, choice.bold, choice.italic, newText)?.let {
+                        font = it.first; showOperand = it.second
                     }
                 }
                 if (showOperand == null) return Result.FALLBACK
@@ -321,7 +370,9 @@ object PdfTextEditor {
                 val fontName: COSName = resources.add(f)
                 val m = first.tp.textMatrix
                 val box = page.cropBox
-                val c = line.color
+                val c = choice.color
+                // text rendering matrix of the first glyph, scaled if the size was changed
+                val k = if (line.fs > 0f && choice.sizePt > 0f) choice.sizePt / line.fs else 1f
                 outTokens.addAll(
                     listOf(
                         Operator.getOperator("q"),
@@ -329,7 +380,7 @@ object PdfTextEditor {
                         fontName, COSInteger.ONE, Operator.getOperator("Tf"),
                         COSFloat(((c shr 16) and 0xFF) / 255f), COSFloat(((c shr 8) and 0xFF) / 255f), COSFloat((c and 0xFF) / 255f),
                         Operator.getOperator("rg"),
-                        COSFloat(m.scaleX), COSFloat(m.shearY), COSFloat(m.shearX), COSFloat(m.scaleY),
+                        COSFloat(m.scaleX * k), COSFloat(m.shearY * k), COSFloat(m.shearX * k), COSFloat(m.scaleY * k),
                         COSFloat(m.translateX + box.lowerLeftX), COSFloat(m.translateY + box.lowerLeftY),
                         Operator.getOperator("Tm"),
                         operand, Operator.getOperator(if (operand is COSArray) "TJ" else "Tj"),

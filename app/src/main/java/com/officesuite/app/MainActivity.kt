@@ -14,6 +14,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import com.officesuite.app.core.DocKind
 import com.officesuite.app.core.FileOps
+import com.officesuite.app.core.FontLibrary
 import com.officesuite.app.home.HomeScreen
 import com.officesuite.app.home.PdfToolsScreen
 import com.officesuite.app.pdf.PdfEditorScreen
@@ -26,6 +27,7 @@ class OfficeApp : Application() {
     override fun onCreate() {
         super.onCreate()
         PDFBoxResourceLoader.init(applicationContext)
+        FontLibrary.init(applicationContext)
     }
 }
 

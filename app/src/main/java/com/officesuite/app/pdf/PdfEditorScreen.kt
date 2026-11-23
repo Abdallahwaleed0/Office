@@ -418,9 +418,9 @@ private fun ToolOptions(st: PdfEditorState) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Selected", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 8.dp).weight(1f))
-            if (sel is TextObj) TextButton(onClick = {
-                st.textRequest = TextRequest(sel.page, sel.x, sel.y, sel.text, sel.size, sel.color, editId = sel.id)
-            }) { Icon(Icons.Filled.Edit, null); Spacer(Modifier.width(4.dp)); Text("Edit") }
+            if (sel is TextObj) TextButton(onClick = { st.requestEditObject(sel) }) {
+                Icon(Icons.Filled.Edit, null); Spacer(Modifier.width(4.dp)); Text("Edit")
+            }
             TextButton(onClick = { st.removeObject(sel.id) }) { Icon(Icons.Filled.Delete, null); Spacer(Modifier.width(4.dp)); Text("Delete") }
             TextButton(onClick = { st.selectedId = null }) { Icon(Icons.Filled.Check, null); Spacer(Modifier.width(4.dp)); Text("Done") }
         }
@@ -431,10 +431,10 @@ private fun ToolOptions(st: PdfEditorState) {
                 Slider(value = st.strokeWidth, onValueChange = { st.strokeWidth = it }, valueRange = 0.0015f..0.012f, modifier = Modifier.weight(1f))
             }
         }
-        st.tool == Tool.ADD_TEXT -> Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-            Text("Tap the page where the text should go", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(8.dp))
-            ColorSwatches(PALETTE, st.color, onPick = { st.color = it })
-        }
+        st.tool == Tool.ADD_TEXT -> Text(
+            "Tap the page where the text should go. Font, size and color are chosen in the next step.",
+            style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
         st.tool == Tool.WHITEOUT -> Text(
             "Drag over anything to cover it with white", style = MaterialTheme.typography.labelMedium,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
