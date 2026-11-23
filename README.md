@@ -44,6 +44,10 @@ in one Android app. Kotlin + Jetpack Compose, minSdk 26 (Android 8.0+), targetSd
 - Saves real .xlsx (keeps charts, merged cells, conditional formatting and other parts it doesn't edit),
   CSV export, PDF export, print, share
 
+## Download the app
+The GitHub build publishes the newest APK here (open on your Android phone, install, allow "unknown apps"):
+https://github.com/Abdallahwaleed0/Office/releases/latest/download/OfficeSuite.apk
+
 ## Build it
 
 ### Option A: Android Studio (computer)
